@@ -1,0 +1,409 @@
+#!/bin/bash
+
+# Purpose:
+# This bash script will allow a student to install all the necessary repositories to work on an STM32F3 Discovery board
+# 
+# Options allow for complete or partial installations, and to run checks to verify necessary commands have been
+# executed after an installation of the necessary repositories
+# A log is generated to outline certain computer details, and trace any errors during an install
+#
+# Note: The function RunCommandArray() will exit when any commands returns 1 due to an execution error
+# This is to facilitate tracking errors, and preventing a user from continuing the install when an error is raised
+# 
+# Intended OS: Linux Mint XFCE
+# If this script is run on a completely fresh install of the above OS, it should execute without issue
+#
+# Written by: Chris Wickens (chriswickens@gmail.com) (Feel free to edit and share this)
+
+# !! Edit this string in case a student has issues and needs to contact you (the teacher) !!
+teacherContact="Teachers Name, teachers@email.com"
+programInformation="Software Engineering Technology"
+
+# Check if the script is being run with 'sudo', exit with message if it is not
+root_id=0 # For comparing against $UID (0 is root user)
+if [ "$UID" -ne "$root_id" ]
+then
+    script_name=$(basename "$0")
+    echo -e "ERROR: Not a root user!\nThis script must be run as sudo: \n\"sudo ./$script_name\""
+    exit
+fi
+
+# Variables
+declare -a installCommands # Array to store commands to be executed
+declare -a successfulCommands # Array to store successful commands
+
+# Colours for output text
+textColourRed="31"
+textColourGreen="92"
+textColourBlack="30"
+textColourWhite="97"
+textBackgroundYellow="103"
+textBackgroundGrey="47"
+textBackgroundBlack="40"
+textBlinkStart="\e[5m"
+textBlinkEnd="\e[25m"
+
+# Combine Colours for specific text blocks
+systemCommandText="\e[4;${textBackgroundYellow};${textColourBlack}m" # Black text/Yellow Background/Underline
+textCommandSuccess="\e[${textColourGreen}m" # Green success text for command
+textCommandError="\e[1;${textBackgroundGrey};${textColourRed}m" # Bold red on white background
+textTitleBar="\e[1;3;4;${textBackgroundBlack};${textColourWhite}m" # Title text
+textEndColour="\e[0m" # End the text colouring
+
+# Functions
+
+# This function is used to populate the installCommands[] array with commands that are considered
+# critical to complete an full installation (-y flag used to prevent asking the user for input)
+# Note: The function AddNecessaryChecks() contains other commands to run that could potentially cause the script
+# to exit when that is not the intent (Checking for a symbolic link for example)
+function AddMasterCommands()
+{
+    # Populate the command array with strings containing commands
+    installCommands=(
+        "apt update"
+        #"apt upgrade" # Increases install time, not necessary
+        "apt install -y build-essential"
+        "apt install -y dfu-util"
+        "apt install -y make" 
+        "apt install -y libtool" 
+        "apt install -y libftdi-dev" 
+        "apt install -y libusb-1.0-0-dev" 
+        "apt install -y minicom" 
+        "apt install -y gcc-arm-none-eabi" 
+        "apt install -y gdb-multiarch"
+        "apt install -y vim"
+        "apt install -y git"
+        "apt install -y openocd"
+        "apt remove -y modemmanager"
+        "usermod -a -G dialout $SUDO_USER"
+    )
+}
+
+# This function is used to print out messages pertaining to command success/failure
+# The log file will be created in the same directory as the script
+# Argument: RunCommandArray() can potentially pass an argument in, which represents a command that experienced a critical error
+function PrintLogFile()
+{
+    # Create a file name for the error log with the current date in it's name
+    logFileOutput="installLog-`date +"%Y-%m-%d"`.txt"
+
+    # Create the log file
+    touch $logFileOutput
+    echo -e "\n${textCommandError}Printing log to file \"$logFileOutput\"${textEndColour}"
+    
+    # Print some basic information to the screen and log file
+    echo "============================= Script Results =========================">>$logFileOutput
+    echo -e "Date/Time of log: `date +"%D-%H:%M:%S"`">>$logFileOutput
+    echo -e "User Details">>$logFileOutput
+    echo -e "User name = $SUDO_USER">>$logFileOutput
+    echo -e "Present working directory: `pwd`\n">>$logFileOutput
+
+    # Print SUCCESSFUL commands to the log (for error tracking purposes)
+    goodCommandSize=${#successfulCommands[@]} # store the size of the successfulCommands array
+    if [ $goodCommandSize -gt 0 ]; # Are there successful commands to print (array size > 0)?
+    then
+        echo -e $"\nSuccessful Commands:">>$logFileOutput
+        for goodCommand in "${successfulCommands[@]}"; # Iterate over successfulCommands[] and print to logFileOutput
+            do
+                echo -e "$goodCommand">>$logFileOutput
+            done
+    else
+        echo -e "No successful commands found!\n">>$logFileOutput
+    fi
+
+    # A failed command from RunCommandArray() is passed in as an argument, and will execute this
+    if [ $# -eq 0 ];  # Check for an argument being passed in (a SINGLE bad command is passed in as an argument)
+    then
+        echo -e "No critical command errors detected!\n">>$logFileOutput
+    else
+        # Print the command that failed to the log
+        echo -e $"Failed Commands:">>$logFileOutput
+        echo -e $"COMMAND FAILED: \"$1\" FAILED Time: `date +"%D-%H:%M:%S"`\n">>$logFileOutput # $1 represents the bad command passed into this function
+    fi
+
+    echo -e $"============================= End of Results =========================\n">>$logFileOutput
+}
+
+# This function runs the commands stored in the installCommands array
+# It will only check if a command is executed correctly (exit 0)
+# This function will exit the script with "exit 1" when a single command fails
+# This is done to help pinpoint any errors during installation
+#
+# Note: This function is essentially stupid, it will only check if a command failed or not.
+# The function AddNecessaryChecks() handles verification of proper return values when running
+# commands to verify the installation/path changes were successful, as outlined in the course material documents.
+# This functionality is broken up so some commands can have custom verification instead of just
+# checking for a command success
+function RunCommandArray()
+{
+    echo -e "\n\n${textTitleBar}================== Executing Commands ==================${textEndColour}"
+
+    # Start iterating over and executing any commands in installCommands array
+    for command in "${installCommands[@]}";
+        do
+            echo -e "${systemCommandText}Running command:${textEndColour} \"$command\"\nCommand Details:"
+
+            eval $command # run the command and evaluate the exit result, any error will exit the script and print an error to the log file
+
+            # If the last commands exit code was != 0 there was an error
+            if (( $? != 0 ));
+                then
+                    # Print error details to the screen
+                    echo -e "${textBlinkStart}${textCommandError}Command $command FAILED!${textEndColour}${textBlinkEnd}"
+
+                    # Pass the failed command into PrintLogFile for error logging
+                    PrintLogFile "$command"
+
+                    # Print teacher info for help
+                    echo -e "${systemCommandText}NEED HELP?${textEndColour}\nPlease contact ${teacherContact} and use the error report generated to get help\n"
+                    exit 1 # Exit with error
+            
+                else # The command was successful, it will be added to successfulCommands[] for log printing
+                    successfulCommands+="COMMAND SUCCESS: \"$command\" SUCCESS Time: `date +"%D-%H:%M:%S"`\n"
+                    echo -e "${textCommandSuccess}Command executed SUCCESSFULLY...${textEndColour}\n"
+            fi
+    done
+}
+
+# This function installs 'snap' repositories and Visual Studio Code using 'snap'
+# This will also remove '/etc/apt/preferences.d/nosnap.pref' which prevents the installation of snap in newer versions of Ubuntu
+function InstallVisualCode()
+{
+    echo -e "\n\n${textTitleBar}================== Visual Code Install ==================${textEndColour}"
+    echo "NOTE: This process will also delete a file that prevents 'snap' from being installed."
+    echo "This change will only provide the ability to use 'snap' to install snap packages."
+
+    # Check if '/etc/apt/preferences.d/nosnap.pref' exists
+    # Checking this here prevents the script from exiting if the file does NOT exist
+    noSnapPrefLocation="/etc/apt/preferences.d/nosnap.pref"
+
+    if [ -f "$noSnapPrefLocation" ]; 
+    then
+        echo "File $noSnapPrefLocation exists, it will be deleted."
+        
+        # Add command to delete nosnap.pref
+        installCommands+=("rm ${noSnapPrefLocation}")
+
+    # nosnap.pref does not exist, no need to try and delete it
+    else
+        echo "File $noSnapPrefLocation does not exist, installation will continue normally."
+    fi
+
+    # Add install commands to installCommands[] array
+    installCommands+=("apt install -y snap") # install snap
+    installCommands+=("apt install -y snapd") #install snapD
+    installCommands+=("snap install core") # install snap core
+    installCommands+=("snap install code --classic") # install VSCode with --classic flag
+}
+
+# This function will create the directory '/mnt/hgfs/' for a VMWare shared folder
+# A symbolic link will also be added to the desktop for the share
+# An entry in '/etc/fstab' will be added to mount the share on startup
+# This is intended to be used AFTER enabling a Shared Folder from VMWare
+# (It's probably a good idea to provide documentation/screenshots on the steps to setup a VMWare Shared Folder)
+function SetupSharedFolder()
+{
+    echo -e "\n\n${textTitleBar}================== Setup A Shared Folder ==================${textEndColour}"
+
+    # Setup instructions
+    echo -e "                   ${textCommandError}${textBlinkStart}===== WARNING ====${textBlinkEnd}${textEndColour}"
+    echo -e "${systemCommandText}Please ensure you know the assigned name for the shared folder BEFORE continuing!${textEndColour}"
+    echo -e "${systemCommandText}The folder name is what you set in the VMWare options for the Shared Folder setup!${textEndColour}"
+    echo -e "           ${systemCommandText}This is CASE SENSITIVE!${textEndColour}"
+    echo "This will allow you to access files on your Virtual Machine stored in a directory on your HOST"
+    echo "A symbolic link (shortcut) will be added to the desktop automatically"
+    echo -e "${systemCommandText}!! IMPORTANT !! This setup requires a reboot of the Virtual Machine !! IMPORTANT !!${textEndColour}"  
+
+    sharedFolderSentinel=false # Sentinel for while loop
+    while [ $sharedFolderSentinel == false ]; 
+    do
+        # Prompt the user for input
+        echo "Do you wish to setup a VMWare shared folder? Enter Y or N:"
+        read answer # Store in answer
+
+        # Transform any lower-case value in answer into upper-case
+        answer=$(echo "$answer" | tr '[:lower:]' '[:upper:]')
+
+        case $answer in
+            Y)
+                # Get the name of the shared folder from user input (stored in sharedFolderName)
+                echo -e -n "Please enter the name of the shared folder ${textBlinkStart}${systemCommandText}(CASE SENSITIVE!)${textEndColour}${textBlinkEnd}: "
+                read sharedFolderName
+
+                # The directory VMWare uses for folder sharing
+                mountDir="/mnt/hgfs/"
+                
+                # Check if the VMWare 'hgfs' directory exists in /mnt/
+                if [ -d "$mountDir" ]; 
+                then # Directory exists, do not add command
+                    echo "Directory $mountDir exists, continuing with share folder setup."
+                else # Directory does NOT exist, add command
+                    echo "Directory $mountDir does not exist, it will be created."
+                    installCommands+=("mkdir ${mountDir}") # Create the hgfs directory in /mnt/ used by VMWare
+                fi
+                
+                # Define the directory where the symbolic link will be created
+                desktopLocation="/home/${SUDO_USER}/Desktop"
+
+                # Check if the symbolic link already exists for the shared folder
+                if [ -L "$desktopLocation/$sharedFolderName" ]; 
+                then
+                    echo "Symbolic link $sharedFolderName exists in $desktopLocation."
+                else
+                    echo "Symbolic link $sharedFolderName does not exist in $desktopLocation, it will be created."
+                    installCommands+=("ln -s /mnt/hgfs/$sharedFolderName /home/${SUDO_USER}/Desktop/") # Create symbolic link for user specified folder name in /mnt/hgfs
+                fi
+                
+                # Add line to "fstab" to automatically mount shared folder on boot
+                fstabLocation="/etc/fstab" # Location of the fstab file
+                fstabString="vmhgfs-fuse ${mountDir} fuse defaults,allow_other 0 0" # string to add to '/etc/fstab'
+                if grep -q "$fstabString" "$fstabLocation"; # grep to check if the string in fstabString already exists in '/etc/fstab'
+                then
+                    echo "fstab mounting entry found in $fstabLocation, skipping step"
+                else
+                    echo "fstab mounting entry not found in $fstabLocation, it will be added"
+                    installCommands+=("echo '$fstabString' >> /etc/fstab") # Automatically mount /hgfs on boot by adding an entry to /etc/fstab
+                fi
+                
+                echo
+                sharedFolderSentinel=true
+                ;;
+
+            N)
+                echo -e "Shared Folder setup will not continue\n"
+                sharedFolderSentinel=true  # Set flag to exit the loop
+                ;;
+            *)
+                echo "Invalid input. Please enter Y or N."
+                ;;
+        esac
+    done
+}
+
+# This function is called after completing necessary repository installations
+# The commands here are checked in this function to prevent RunCommandArray() from exiting the script when that is not the intent
+# Example: If a symbolic link exists, RunCommandArray() would trigger the script to exit,
+# when the script just needs to skip creating the symbolic link instead
+function AddNecessaryChecks()
+{
+    echo -e "${textTitleBar}================== NECESSARY CHECKS ==================${textEndColour}"
+
+    # Define the directory where the symbolic link is expected for gdb
+    multiArchSource="/usr/bin/gdb-multiarch"
+    # Define the symbolic link name
+    symbolicLinkName="/usr/bin/arm-none-eabi-gdb"
+
+    if [ -L "$symbolicLinkName" ]; # Check if the symbolic link exists
+    then
+        echo "Symbolic link $symbolicLinkName already exists, skipping."
+    else
+        echo "Symbolic link $symbolicLinkName does not exist, it will be created."
+        installCommands+=("ln -s ${multiArchSource} ${symbolicLinkName}")
+    fi
+
+    # check if openocd is installed
+    # (This should have been installed previously, but just in case!)
+    openocdExpected="/usr/bin/openocd"
+    openocdOutput=$(which openocd)
+    if [ "$openocdExpected" == "$openocdOutput" ];
+    then
+        echo -e $"Openocd is already installed, skipping."
+    else
+        echo -e $"Openocd needs to be installed."
+        installCommands+=("apt install -y openocd")
+    fi
+}
+
+# "Main" program code
+# Loops to display the menu and allows the user to choose an installation procedure
+# arrays successfulCommands[] and installCommands[] will be cleared (using 'unset') in specific sections
+# to facilitate running installations/checks more than once without exiting the script
+# (otherwise, the arrays would be populated multiple times and the log would be very messy)
+while true; 
+do
+    # Main menu display
+    echo -e "\n           ${textTitleBar}Super Bash Script Installation Options Menu${textEndColour}"
+    echo -e "\n            ${textTitleBar}Teacher: $teacherContact${textEndColour}"
+    echo -e "\n      ${textTitleBar}Program Information: $programInformation${textEndColour}"    
+    echo -e "\n  1) Full setup"
+    echo -e "      - Installs necessary repositories"
+    echo -e "      - Installs visual code"
+    echo -e "      - Creates a desktop link to a VMWare shared folder"
+    echo -e "      - ${textCommandSuccess}Perform checks to ensure installation process was successful${textEndColour}"
+    echo -e "\n  2) Install necessary repositories ONLY"
+    echo -e "\n  3) Install Visual Code ONLY"
+    echo -e "\n  4) Shared folder setup ONLY"
+    echo -e "\n  5) Verify Commands ${textCommandError}(Only to be used AFTER installing necessary repositories)${textEndColour}"
+    echo -e "      - Checks certain commands to ensure the necessary items were installed"
+    echo -e "      - This will not verify a Visual Code install, or Share Folder setup"
+    echo -e "\n  6) Exit Script\n"
+    echo -e "${textCommandError}PLEASE REBOOT AFTER ANY INSTALLATION PROCEDURE IS COMPLETED!${textEndColour}"
+
+    # Prompt user for choice
+    read -p "Enter your choice (1-6): " menuSelection
+    echo
+
+    # Case statement to process user choice
+    # 'unset' is used in these cases to ensure fresh data is being printed out,
+    # regarding any command errors/successes
+    case $menuSelection in
+        1)
+            # Full setup
+            echo "Starting full setup"
+            AddMasterCommands # Add the commands for necessary repositores install
+            InstallVisualCode # Add the commands for Visual Code install
+            SetupSharedFolder # Add the commands for a Shared Folder (VMWare share) setup
+            RunCommandArray # Execute the commands
+            unset installCommands # Clear the array containing commands to be executed
+
+            AddNecessaryChecks # Verify final setup commands
+            RunCommandArray # Execute the commands            
+            PrintLogFile # Print the logfile
+            unset successfulCommands # Clear the array containing successful commands
+            ;;
+        2)
+            # Install necessary repos
+            AddMasterCommands # Add the commands for necessary repositores install
+            RunCommandArray # Execute the commands
+            unset installCommands # Clear the array containing commands to be executed
+
+            AddNecessaryChecks # Verify final setup commands
+            RunCommandArray # Execute the commands
+            PrintLogFile # Print the logfile
+            unset successfulCommands # Clear the array containing successful commands
+            ;;
+        3)
+            # Visual code install
+            InstallVisualCode # Add the commands for Visual Code install
+            RunCommandArray # Execute the commands
+            unset installCommands # Clear the array containing commands to be executed
+            PrintLogFile # Print the logfile
+            unset successfulCommands # Clear the array containing successful commands
+            ;;
+        4) 
+            # Share folder setup
+            SetupSharedFolder # Add the commands for a Shared Folder (VMWare share) setup
+            RunCommandArray # Execute the commands
+            unset installCommands # Clear the array containing commands to be executed
+            PrintLogFile # Print the logfile
+            unset successfulCommands # Clear the array containing successful commands
+            ;;
+        5)  
+            # Verification using specific commands related to repos being installed
+            AddNecessaryChecks # Verify final setup commands
+            RunCommandArray # Execute the commands
+            PrintLogFile # Print the logfile
+            unset installCommands # Clear the array containing commands to be executed
+            unset successfulCommands # Clear the array containing successful commands
+            ;;
+        6)
+            echo "Exiting..."
+            break
+            ;;
+        *)
+            echo "Invalid choice. Please enter a number from 1 to 6."
+            ;;
+    esac
+done
+
+exit
